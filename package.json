@@ -1,0 +1,17 @@
+{
+  "name": "my-orm",
+  "version": "1.0.0",
+  "description": "A simple Prisma-like ORM with migrations for MySQL",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "keywords": ["orm", "prisma", "mysql", "migrations", "ssl"],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "knex": "^3.1.0",
+    "mysql2": "^3.9.1",
+    "fs-extra": "^11.2.0"
+  }
+}
