@@ -51,47 +51,6 @@ class Model {
     this.tableName = `${model.name.toLowerCase()}s`;
   }
 
-  findAll() {
-  let query = getDB()(this.tableName).select('*');
-
-  return new Proxy(query, {
-    get(target, prop) {
-      if (prop === 'amount') {
-        return (n) => new Proxy(target.clone().limit(n), this);
-      }
-      if (prop === 'orderBy') {
-        return (column, direction = 'asc') => new Proxy(target.clone().orderBy(column, direction), this);
-      }
-      if (prop === 'whereNot') {
-        return (column, value) => new Proxy(target.clone().whereNot(column, value), this);
-      }
-      return target[prop]; // Kembalikan method asli Knex jika bukan custom method
-    }
-  });
-}
-
-except(excObj) {
-  let query = getDB()(this.tableName).select('*');
-
-  // Loop semua field di excObj dan terapkan whereNot
-  Object.entries(excObj).forEach(([key, value]) => {
-    query = query.whereNot(key, value);
-  });
-
-  return new Proxy(query, {
-    get(target, prop) {
-      if (prop === 'amount') {
-        return (n) => new Proxy(target.clone().limit(n), this);
-      }
-      if (prop === 'orderBy') {
-        return (column, direction = 'asc') => new Proxy(target.clone().orderBy(column, direction), this);
-      }
-      return Reflect.get(target, prop);
-    }
-  });
-}
-
-
 findMany({ 
   where = {}, 
   select = "*", 
@@ -173,7 +132,9 @@ applyWhere(query, where) {
 }
 
 async  paginate({ where = {}, orderBy = "id", take = 3, cursor }) {
-  let query = getDB()("users").select("*").where(where);
+  let query = getDB()("users").select("*");
+
+  query = this.applyWhere(query, where)
 
   if (cursor !== undefined && cursor !== null) {
     query = query.where(orderBy, ">=", cursor); // Pakai >= supaya ID terakhir tetap ada
@@ -214,7 +175,7 @@ async find({
   
     // WHERE
     if (Object.keys(where).length > 0) {
-      query = query.where(where);
+      query = this.applyWhere(query, where)
     }
   
     // INCLUDE (JOIN dengan tabel lain)
@@ -256,23 +217,25 @@ async find({
 
  async create(data) {
    try {
-    return await getDB()(this.tableName).insert(data).then(ids => this.findById(ids[0]));
+    return await getDB()(this.tableName).insert(data).then(ids => this.findById({id: ids[0]}));
    } catch(e) {
      throw this._handleError(e)
    }
   }
   
-  async findOrCreate(srcObj, values) {
-  try {
-   const data = await this.find(srcObj)
-   if(data) {
-     return data
-   } else {
-     return await getDB()(this.tableName).insert(values).then(ids => this.findById(ids[0]));
-   }
-  } catch(e) {
-    throw this._handleError(e)
-  }
+  async upsert({where = {}, data}) {
+    try {
+    const item = await this.find({where: where})
+    if(item) {
+      console.log("Updated data")
+      return await getDB()(this.tableName).where(where).update(data).then(() => this.find({where}));
+    } else {
+      console.log("Created data")
+      return await this.create(data)
+    }
+    } catch(e) {
+      throw this._handleError(e)
+    }
 }
   
   _handleError(error) {
