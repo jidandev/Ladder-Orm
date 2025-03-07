@@ -91,36 +91,168 @@ except(excObj) {
   });
 }
 
-find(findObj) {
-  let query = getDB()(this.tableName).select('*');
 
+findMany({ 
+  where = {}, 
+  select = "*", 
+  include, 
+  orderBy, 
+  skip, 
+  take, 
+  cursor, 
+  distinct 
+} = {}) {
+  let query = getDB()(this.tableName).select(select);
 
-  Object.entries(findObj).forEach(([key, value]) => {
-    query = query.where(key, value);
-  });
+  // WHERE (Filter kondisi)
+  query = this.applyWhere(query, where);
 
-  return new Proxy(query, {
-    get(target, prop) {
-      if (prop === 'amount') {
-        return (n) => new Proxy(target.clone().limit(n), this);
-      }
-      if (prop === 'orderBy') {
-        return (column, direction = 'asc') => new Proxy(target.clone().orderBy(column, direction), this);
-      }
-      return Reflect.get(target, prop);
-    }
-  });
+  // INCLUDE (JOIN dengan tabel lain)
+  if (include) {
+    Object.entries(include).forEach(([key, value]) => {
+      query = query.leftJoin(key, `${this.tableName}.${value}`, `${key}.id`);
+    });
+  }
+
+  // ORDER BY
+  if (orderBy) query = query.orderBy(orderBy);
+
+  // DISTINCT
+  if (distinct) query = query.distinct(distinct);
+
+  // PAGINATION: CURSOR atau SKIP & TAKE
+  if (cursor) {
+    query = query.where(cursor.field, ">", cursor.value);
+  } else {
+    if (skip) query = query.offset(skip);
+    if (take) query = query.limit(take);
+  }
+
+  return query;
 }
 
-  async findById(id) {
-    try {
-    const data = await getDB()(this.tableName).where('id', id).first();
-    if (!data) return null
-    return data
-    } catch(e) {
-      throw this._handleError(e)
+// Helper function buat applyWhere biar bisa dipanggil recursive
+applyWhere(query, where) {
+  const operatorMap = { gt: ">", gte: ">=", lt: "<", lte: "<=", equals: "=", not: "!=" };
+
+  Object.entries(where).forEach(([key, value]) => {
+    if (key === "OR") {
+      query = query.where((builder) => {
+        value.forEach((condition) => {
+          builder.orWhere((subQuery) => this.applyWhere(subQuery, condition));
+        });
+      });
+    } else if (key === "AND") {
+      value.forEach((condition) => {
+        query = query.where((builder) => this.applyWhere(builder, condition));
+      });
+    } else if (key === "NOT") {
+      Object.entries(value).forEach(([notKey, notValue]) => {
+        if (Array.isArray(notValue)) {
+          query = query.whereNotIn(notKey, notValue);
+        } else if (typeof notValue === "object") {
+          Object.entries(notValue).forEach(([op, val]) => {
+            query = query.whereNot(notKey, operatorMap[op] || "=", val);
+          });
+        } else {
+          query = query.whereNot(notKey, notValue);
+        }
+      });
+    } else if (typeof value === "object") {
+      Object.entries(value).forEach(([op, val]) => {
+        query = query.where(key, operatorMap[op] || "=", val);
+      });
+    } else if (Array.isArray(value)) {
+      query = query.whereIn(key, value);
+    } else {
+      query = query.where(key, value);
     }
+  });
+
+  return query;
+}
+
+async  paginate({ where = {}, orderBy = "id", take = 3, cursor }) {
+  let query = getDB()("users").select("*").where(where);
+
+  if (cursor !== undefined && cursor !== null) {
+    query = query.where(orderBy, ">=", cursor); // Pakai >= supaya ID terakhir tetap ada
   }
+
+  query = query.orderBy(orderBy, "asc").limit(take + 1);
+
+  const results = await query;
+  const hasNextPage = results.length > take;
+
+  // Ambil hanya `take` item pertama (buang yg lebih)
+  const items = hasNextPage ? results.slice(0, take) : results;
+
+  // `nextCursor` = ID pertama halaman selanjutnya
+  const nextCursor = hasNextPage ? results[take][orderBy] : null;
+
+  // `prevCursor` = ID pertama di halaman sebelumnya (harusnya dari query sebelumnya)
+  const prevCursor = cursor || null;
+
+  return {
+    items,
+    nextCursor,
+    prevCursor,
+    hasNextPage,
+    hasPrevPage: cursor !== null,
+    pageSize: take
+  };
+}
+
+async find({ 
+  where = {}, 
+  select = "*", 
+  include
+} = {}) {
+  try {
+    if(Object.keys(where).length == 0) throw new Error("Paramater 'where' tidak boleh kosong!")
+    let query = getDB()(this.tableName).select(select).first();
+  
+    // WHERE
+    if (Object.keys(where).length > 0) {
+      query = query.where(where);
+    }
+  
+    // INCLUDE (JOIN dengan tabel lain)
+    if (include) {
+      Object.entries(include).forEach(([key, value]) => {
+        query = query.leftJoin(key, `${this.tableName}.${value}`, `${key}.id`);
+      });
+    }
+  
+    const result = await query
+    return result || null;
+  } catch(e) {
+    throw this._handleError(e)
+  }
+} 
+
+  async findById({ 
+  id, 
+  select = "*", 
+  include
+} = {}) {
+  try {
+    if(!id) throw new Error("Paramater 'id' tidak boleh kosong!")
+    let query = getDB()(this.tableName).select(select).where("id", id).first();
+  
+    // INCLUDE (JOIN dengan tabel lain)
+    if (include) {
+      Object.entries(include).forEach(([key, value]) => {
+        query = query.leftJoin(key, `${this.tableName}.${value}`, `${key}.id`);
+      });
+    }
+  
+    const result = await query
+    return result || null;
+  } catch(e) {
+    throw this._handleError(e)
+  }
+} 
 
  async create(data) {
    try {
@@ -130,8 +262,26 @@ find(findObj) {
    }
   }
   
+  async findOrCreate(srcObj, values) {
+  try {
+   const data = await this.find(srcObj)
+   if(data) {
+     return data
+   } else {
+     return await getDB()(this.tableName).insert(values).then(ids => this.findById(ids[0]));
+   }
+  } catch(e) {
+    throw this._handleError(e)
+  }
+}
+  
   _handleError(error) {
-    const err = ERROR_CODES[error.errno] || { code: 'L000', message: 'Unknown database error' };
+    const err = ERROR_CODES[error.errno] || {
+      status: false,
+      type: 'Unknown error',
+      code: 'L000',
+      message: error.message
+      };
   return {
     status: false,
     type: err.type,
@@ -149,4 +299,4 @@ function initORM(schemaPath) {
   return orm.init().then(() => orm);
 }
 
-module.exports = { initORM, ORM };
+module.exports = { initORM, ORM, getDB };
