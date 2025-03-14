@@ -223,6 +223,42 @@ async find({
    }
   }
   
+  async delete({where = {}, data}) {
+    try {
+    const item = await this.find({where: where})
+    if(item) {
+      console.log("Deleted data")
+      return await getDB()(this.tableName).where(where).del()
+    } else {
+      return {
+        status: true,
+        deleted: 0,
+        message: "No data deleted!"
+      }
+    }
+    } catch(e) {
+      throw this._handleError(e)
+    }
+}
+  
+  async update({where = {}, data}) {
+    try {
+    const item = await this.find({where: where})
+    if(item) {
+      console.log("Updated data")
+      return await getDB()(this.tableName).where(where).update(data).then(() => this.find({where}));
+    } else {
+      return {
+        status: true,
+        updated: 0,
+        message: "No data updated!"
+      }
+    }
+    } catch(e) {
+      throw this._handleError(e)
+    }
+}
+  
   async upsert({where = {}, data}) {
     try {
     const item = await this.find({where: where})
