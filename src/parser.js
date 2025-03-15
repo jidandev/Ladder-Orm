@@ -9,13 +9,15 @@ function parseSchema(filePath) {
   const models = [];
   let currentModel = null;
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
     if (line.startsWith('datasource')) {
       const datasourceLines = [];
-      let nextLine = lines[lines.indexOf(line) + 1];
-      while (nextLine && !nextLine.startsWith('}')) {
-        datasourceLines.push(nextLine);
-        nextLine = lines[lines.indexOf(nextLine) + 1];
+      i++;
+      while (i < lines.length && !lines[i].startsWith('}')) {
+        datasourceLines.push(lines[i]);
+        i++;
       }
       datasource = parseDataSource(datasourceLines);
     } else if (line.startsWith('model')) {
@@ -45,12 +47,26 @@ function parseDataSource(lines) {
 function parseField(definition) {
   const parts = definition.split(' ').filter(Boolean);
   const field = { type: parts[0] };
+
   for (const part of parts.slice(1)) {
     if (part === '@id') field.isId = true;
     if (part === '@unique') field.isUnique = true;
     if (part === '?') field.isOptional = true;
-    if (part.startsWith('@default')) field.default = part.match(/\((.*)\)/)?.[1];
+    if (part === '@updatedAt') field.isUpdatedAt = true;
+    if (part.startsWith('@default')) {
+      const defaultMatch = part.match(/@default\((.*?)\)/);
+      if (defaultMatch) field.default = defaultMatch[1];
+    }
+    if (part.startsWith('@references')) {
+      const refMatch = part.match(/@references\((.*?)\)/);
+      if (refMatch) field.references = refMatch[1];
+    }
+    if (part.startsWith('@onDelete')) {
+      const onDeleteMatch = part.match(/@onDelete\((.*?)\)/);
+      if (onDeleteMatch) field.onDelete = onDeleteMatch[1];
+    }
   }
+
   return field;
 }
 

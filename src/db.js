@@ -18,12 +18,42 @@ function initDatabase(datasource) {
           ? { ca: fs.readFileSync(datasource.ssl).toString(), rejectUnauthorized: false }
           : false,
       },
+      pool: {
+        min: 1,
+        max: 5,
+        acquireTimeoutMillis: 120000,
+        idleTimeoutMillis: 60000,
+        createRetryIntervalMillis: 2000,
+        createTimeoutMillis: 30000,
+      },
     });
-    db.raw('SELECT 1')
-      .then(() => console.log('✅ Database connected'))
-      .catch(err => console.error('❌ Connection failed:', err.message));
+
+    return db.raw('SELECT 1')
+      .then(() => {
+        console.log('✅ Database connected');
+        return db;
+      })
+      .catch(err => {
+        console.error('❌ Connection failed:', err.message);
+        throw err;
+      });
   }
-  return db;
+  return Promise.resolve(db);
+}
+
+async function withRetry(operation, maxRetries = 3, delayMs = 2000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (err) {
+      if (err.message === 'aborted' && attempt < maxRetries) {
+        console.log(`⚠️ Attempt ${attempt} failed: ${err.message}. Retrying in ${delayMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      } else {
+        throw err;
+      }
+    }
+  }
 }
 
 async function migrateTables(models) {
@@ -31,11 +61,12 @@ async function migrateTables(models) {
   try {
     for (const model of models) {
       const tableName = `${model.name.toLowerCase()}s`;
-      const hasTable = await db.schema.hasTable(tableName);
+      console.log(`🔍 Checking table: ${tableName}`);
+      const hasTable = await withRetry(() => db.schema.hasTable(tableName));
 
       if (!hasTable) {
-        // Buat tabel baru jika belum ada
-        await db.schema.createTable(tableName, (table) => {
+        console.log(`🛠️ Creating table: ${tableName}`);
+        await withRetry(() => db.schema.createTable(tableName, (table) => {
           for (const [fieldName, field] of Object.entries(model.fields)) {
             if (field.isId) {
               table.increments(fieldName).primary();
@@ -45,49 +76,107 @@ async function migrateTables(models) {
               if (!field.isOptional) col.notNullable();
               if (field.default) col.defaultTo(field.default);
             } else if (field.type === 'Int') {
-              const col = table.integer(fieldName);
+              const col = table.integer(fieldName).unsigned();
               if (field.isUnique) col.unique();
               if (!field.isOptional) col.notNullable();
-              if (field.default) col.defaultTo(field.default);
+              if (field.default && field.default !== 'autoincrement') col.defaultTo(field.default);
+              if (field.references) {
+                const [refTable, refColumn] = field.references.split('.');
+                const fkName = `${tableName}_${fieldName}_fkey`;
+                console.log(`🔗 Adding FK ${fkName} for ${fieldName} in ${tableName} during creation`);
+                table.foreign(fieldName, fkName)
+                  .references(refColumn)
+                  .inTable(`${refTable.toLowerCase()}s`)
+                  .onDelete(field.onDelete ? field.onDelete.toUpperCase() : 'NO ACTION');
+              }
+            } else if (field.type === 'DateTime') {
+              const col = table.dateTime(fieldName);
+              if (!field.isOptional) col.notNullable();
+              if (field.default === 'now' || field.isUpdatedAt) {
+                col.defaultTo(db.fn.now());
+                if (field.isUpdatedAt) col.defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
+              }
             }
           }
-        });
+        }));
+
         console.log(`✅ Created table "${tableName}"`);
       } else {
-        // Cek dan sesuaikan tabel yang sudah ada
+        console.log(`🔧 Updating table: ${tableName}`);
         for (const [fieldName, field] of Object.entries(model.fields)) {
-          const hasColumn = await db.schema.hasColumn(tableName, fieldName);
+          const hasColumn = await withRetry(() => db.schema.hasColumn(tableName, fieldName));
           if (!hasColumn) {
-            await db.schema.table(tableName, (table) => {
+            console.log(`➕ Adding column ${fieldName} to ${tableName}`);
+            await withRetry(() => db.schema.table(tableName, (table) => {
               if (field.type === 'String') {
                 const col = table.string(fieldName, 255);
                 if (field.isUnique) col.unique();
                 if (!field.isOptional) col.notNullable();
                 if (field.default) col.defaultTo(field.default);
               } else if (field.type === 'Int') {
-                const col = table.integer(fieldName);
+                const col = table.integer(fieldName).unsigned();
                 if (field.isUnique) col.unique();
                 if (!field.isOptional) col.notNullable();
-                if (field.default) col.defaultTo(field.default);
+                if (field.default && field.default !== 'autoincrement') col.defaultTo(field.default);
+              } else if (field.type === 'DateTime') {
+                const col = table.dateTime(fieldName);
+                if (!field.isOptional) col.notNullable().defaultTo(db.fn.now());
+                else col.nullable();
+              }
+            }));
+          }
+
+          if (field.references) {
+            const [refTable, refColumn] = field.references.split('.');
+            const fkName = `${tableName}_${fieldName}_fkey`;
+            console.log(`🔗 Ensuring FK ${fkName} for ${fieldName} in ${tableName}`);
+
+            const columnInfo = await db.raw(`
+              SHOW COLUMNS FROM ${tableName} WHERE Field = ?
+            `, [fieldName]);
+            if (columnInfo[0] && columnInfo[0].Type !== 'int unsigned') {
+              console.log(`🔧 Changing ${fieldName} to INT UNSIGNED in ${tableName}`);
+              await withRetry(() => db.schema.table(tableName, (table) => {
+                table.integer(fieldName).unsigned().notNullable().alter();
+              }));
+            }
+
+            await withRetry(async () => {
+              const fkExists = await db.raw(`
+                SELECT CONSTRAINT_NAME
+                FROM information_schema.TABLE_CONSTRAINTS
+                WHERE TABLE_NAME = ? AND CONSTRAINT_TYPE = 'FOREIGN KEY' AND CONSTRAINT_NAME = ?
+              `, [tableName, fkName]);
+
+              if (fkExists.length === 0) {
+                console.log(`🔗 Adding FK ${fkName} for ${fieldName} in ${tableName}`);
+                await db.schema.table(tableName, (table) => {
+                  table.foreign(fieldName, fkName)
+                    .references(refColumn)
+                    .inTable(`${refTable.toLowerCase()}s`)
+                    .onDelete(field.onDelete ? field.onDelete.toUpperCase() : 'NO ACTION');
+                });
+              } else {
+                console.log(`ℹ️ FK ${fkName} already exists for ${fieldName} in ${tableName}`);
               }
             });
-            console.log(`✅ Added column "${fieldName}" to "${tableName}"`);
-          }
-          // Cek unique constraint (simpel: skip jika error)
-          if (field.isUnique && fieldName !== 'id') {
-            try {
-              await db.schema.table(tableName, (table) => {
-                table.unique(fieldName, `${tableName}_${fieldName}_unique`);
-              });
-            } catch (err) {
-              if (err.code === 'ER_DUP_KEYNAME') {
-                console.log(`ℹ️ Unique constraint on "${fieldName}" already exists in "${tableName}"`);
-              } else {
-                throw err;
-              }
-            }
           }
         }
+
+        if (Object.values(model.fields).some(f => f.isUpdatedAt)) {
+          const hasUpdatedAt = await withRetry(() => db.schema.hasColumn(tableName, 'updatedAt'));
+          if (!hasUpdatedAt) {
+            console.log(`➕ Adding updatedAt to ${tableName}`);
+            await withRetry(() => db.schema.table(tableName, (table) => {
+              table.dateTime('updatedAt').notNullable().defaultTo(db.fn.now());
+            }));
+          }
+          console.log(`🔧 Setting ON UPDATE for updatedAt in ${tableName}`);
+          await withRetry(() => db.schema.alterTable(tableName, (table) => {
+            table.dateTime('updatedAt').notNullable().defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP')).alter();
+          }));
+        }
+
         console.log(`✅ Table "${tableName}" checked and updated`);
       }
     }
