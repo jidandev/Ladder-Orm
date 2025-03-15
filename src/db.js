@@ -74,7 +74,10 @@ async function migrateTables(models) {
               const col = table.string(fieldName, 255);
               if (field.isUnique) col.unique();
               if (!field.isOptional) col.notNullable();
-              if (field.default) col.defaultTo(field.default);
+              if (field.default) {
+                console.log(`🔧 Setting default "${field.default}" for ${fieldName} in ${tableName}`);
+                col.defaultTo(field.default);
+              }
             } else if (field.type === 'Int') {
               const col = table.integer(fieldName).unsigned();
               if (field.isUnique) col.unique();
@@ -92,10 +95,8 @@ async function migrateTables(models) {
             } else if (field.type === 'DateTime') {
               const col = table.dateTime(fieldName);
               if (!field.isOptional) col.notNullable();
-              if (field.default === 'now' || field.isUpdatedAt) {
-                col.defaultTo(db.fn.now());
-                if (field.isUpdatedAt) col.defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
-              }
+              if (field.default === 'now') col.defaultTo(db.fn.now());
+              if (field.isUpdatedAt) col.defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
             }
           }
         }));
@@ -112,7 +113,10 @@ async function migrateTables(models) {
                 const col = table.string(fieldName, 255);
                 if (field.isUnique) col.unique();
                 if (!field.isOptional) col.notNullable();
-                if (field.default) col.defaultTo(field.default);
+                if (field.default) {
+                  console.log(`🔧 Setting default "${field.default}" for ${fieldName} in ${tableName}`);
+                  col.defaultTo(field.default);
+                }
               } else if (field.type === 'Int') {
                 const col = table.integer(fieldName).unsigned();
                 if (field.isUnique) col.unique();
@@ -120,8 +124,13 @@ async function migrateTables(models) {
                 if (field.default && field.default !== 'autoincrement') col.defaultTo(field.default);
               } else if (field.type === 'DateTime') {
                 const col = table.dateTime(fieldName);
-                if (!field.isOptional) col.notNullable().defaultTo(db.fn.now());
-                else col.nullable();
+                if (!field.isOptional) {
+                  col.notNullable();
+                  if (field.default === 'now') col.defaultTo(db.fn.now());
+                  if (field.isUpdatedAt) col.defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
+                } else {
+                  col.nullable();
+                }
               }
             }));
           }
@@ -161,20 +170,41 @@ async function migrateTables(models) {
               }
             });
           }
-        }
 
-        if (Object.values(model.fields).some(f => f.isUpdatedAt)) {
-          const hasUpdatedAt = await withRetry(() => db.schema.hasColumn(tableName, 'updatedAt'));
-          if (!hasUpdatedAt) {
-            console.log(`➕ Adding updatedAt to ${tableName}`);
-            await withRetry(() => db.schema.table(tableName, (table) => {
-              table.dateTime('updatedAt').notNullable().defaultTo(db.fn.now());
-            }));
+          // Perbaiki default String yang udah ada
+          if (field.type === 'String' && field.default) {
+            const columnInfo = await db.raw(`
+              SHOW COLUMNS FROM ${tableName} WHERE Field = ?
+            `, [fieldName]);
+            if (columnInfo[0] && columnInfo[0].Default !== field.default) {
+              console.log(`🔧 Updating default to "${field.default}" for ${fieldName} in ${tableName}`);
+              await withRetry(() => db.schema.table(tableName, (table) => {
+                table.string(fieldName, 255).notNullable().defaultTo(field.default).alter();
+              }));
+            }
           }
-          console.log(`🔧 Setting ON UPDATE for updatedAt in ${tableName}`);
-          await withRetry(() => db.schema.alterTable(tableName, (table) => {
-            table.dateTime('updatedAt').notNullable().defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP')).alter();
-          }));
+
+          // Perbaiki DateTime yang udah ada
+          if (field.type === 'DateTime' && (field.default === 'now' || field.isUpdatedAt)) {
+            const columnInfo = await db.raw(`
+              SHOW COLUMNS FROM ${tableName} WHERE Field = ?
+            `, [fieldName]);
+            if (columnInfo[0]) {
+              const currentDefault = columnInfo[0].Default;
+              const isUpdatedAtCorrect = columnInfo[0].Extra.toUpperCase().includes('ON UPDATE CURRENT_TIMESTAMP');
+              if (field.default === 'now' && currentDefault !== 'CURRENT_TIMESTAMP') {
+                console.log(`🔧 Setting DEFAULT CURRENT_TIMESTAMP for ${fieldName} in ${tableName}`);
+                await withRetry(() => db.schema.table(tableName, (table) => {
+                  table.dateTime(fieldName).notNullable().defaultTo(db.fn.now()).alter();
+                }));
+              } else if (field.isUpdatedAt && !isUpdatedAtCorrect) {
+                console.log(`🔧 Setting ON UPDATE CURRENT_TIMESTAMP for ${fieldName} in ${tableName}`);
+                await withRetry(() => db.schema.table(tableName, (table) => {
+                  table.dateTime(fieldName).notNullable().defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP')).alter();
+                }));
+              }
+            }
+          }
         }
 
         console.log(`✅ Table "${tableName}" checked and updated`);
