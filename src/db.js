@@ -74,7 +74,7 @@ async function migrateTables(models) {
               const col = table.string(fieldName, 255);
               if (field.isUnique) col.unique();
               if (!field.isOptional) col.notNullable();
-              if (field.default) {
+              if (field.default !== undefined) {
                 console.log(`🔧 Setting default "${field.default}" for ${fieldName} in ${tableName}`);
                 col.defaultTo(field.default);
               }
@@ -95,12 +95,17 @@ async function migrateTables(models) {
             } else if (field.type === 'DateTime') {
               const col = table.dateTime(fieldName);
               if (!field.isOptional) col.notNullable();
-              if (field.default === 'now') col.defaultTo(db.fn.now());
-              if (field.isUpdatedAt) col.defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
+              if (field.default === 'now') {
+                console.log(`🔧 Setting default CURRENT_TIMESTAMP for ${fieldName} in ${tableName}`);
+                col.defaultTo(db.fn.now());
+              }
+              if (field.isUpdatedAt) {
+                console.log(`🔧 Setting default CURRENT_TIMESTAMP ON UPDATE for ${fieldName} in ${tableName}`);
+                col.defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
+              }
             }
           }
         }));
-
         console.log(`✅ Created table "${tableName}"`);
       } else {
         console.log(`🔧 Updating table: ${tableName}`);
@@ -113,7 +118,7 @@ async function migrateTables(models) {
                 const col = table.string(fieldName, 255);
                 if (field.isUnique) col.unique();
                 if (!field.isOptional) col.notNullable();
-                if (field.default) {
+                if (field.default !== undefined) {
                   console.log(`🔧 Setting default "${field.default}" for ${fieldName} in ${tableName}`);
                   col.defaultTo(field.default);
                 }
@@ -126,8 +131,14 @@ async function migrateTables(models) {
                 const col = table.dateTime(fieldName);
                 if (!field.isOptional) {
                   col.notNullable();
-                  if (field.default === 'now') col.defaultTo(db.fn.now());
-                  if (field.isUpdatedAt) col.defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
+                  if (field.default === 'now') {
+                    console.log(`🔧 Setting default CURRENT_TIMESTAMP for ${fieldName} in ${tableName}`);
+                    col.defaultTo(db.fn.now());
+                  }
+                  if (field.isUpdatedAt) {
+                    console.log(`🔧 Setting default CURRENT_TIMESTAMP ON UPDATE for ${fieldName} in ${tableName}`);
+                    col.defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
+                  }
                 } else {
                   col.nullable();
                 }
@@ -135,14 +146,51 @@ async function migrateTables(models) {
             }));
           }
 
+          // Perbaiki default yang salah di tabel lama
+          if (field.type === 'String' && field.default !== undefined) {
+            const columnInfo = await db.raw(`SHOW COLUMNS FROM ${tableName} WHERE Field = ?`, [fieldName]);
+            if (columnInfo[0]) {
+              const currentDefault = columnInfo[0].Default;
+              if (currentDefault !== field.default) {
+                console.log(`🔧 Updating default to "${field.default}" for ${fieldName} in ${tableName} (was ${currentDefault})`);
+                await withRetry(() => db.schema.table(tableName, (table) => {
+                  const col = table.string(fieldName, 255).notNullable().defaultTo(field.default);
+                  if (field.isUnique) col.unique();
+                  col.alter();
+                }));
+              }
+            }
+          }
+
+          if (field.type === 'DateTime' && (field.default === 'now' || field.isUpdatedAt)) {
+            const columnInfo = await db.raw(`SHOW COLUMNS FROM ${tableName} WHERE Field = ?`, [fieldName]);
+            if (columnInfo[0]) {
+              const currentDefault = columnInfo[0].Default;
+              const currentExtra = columnInfo[0].Extra || '';
+              const needsDefaultNow = field.default === 'now' && currentDefault !== 'CURRENT_TIMESTAMP';
+              const needsUpdatedAt = field.isUpdatedAt && !currentExtra.toUpperCase().includes('ON UPDATE CURRENT_TIMESTAMP');
+
+              if (needsDefaultNow) {
+                console.log(`🔧 Updating default to CURRENT_TIMESTAMP for ${fieldName} in ${tableName}`);
+                await withRetry(() => db.schema.table(tableName, (table) => {
+                  table.dateTime(fieldName).notNullable().defaultTo(db.fn.now()).alter();
+                }));
+              }
+              if (needsUpdatedAt) {
+                console.log(`🔧 Updating to CURRENT_TIMESTAMP ON UPDATE for ${fieldName} in ${tableName}`);
+                await withRetry(() => db.schema.table(tableName, (table) => {
+                  table.dateTime(fieldName).notNullable().defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP')).alter();
+                }));
+              }
+            }
+          }
+
           if (field.references) {
             const [refTable, refColumn] = field.references.split('.');
             const fkName = `${tableName}_${fieldName}_fkey`;
             console.log(`🔗 Ensuring FK ${fkName} for ${fieldName} in ${tableName}`);
 
-            const columnInfo = await db.raw(`
-              SHOW COLUMNS FROM ${tableName} WHERE Field = ?
-            `, [fieldName]);
+            const columnInfo = await db.raw(`SHOW COLUMNS FROM ${tableName} WHERE Field = ?`, [fieldName]);
             if (columnInfo[0] && columnInfo[0].Type !== 'int unsigned') {
               console.log(`🔧 Changing ${fieldName} to INT UNSIGNED in ${tableName}`);
               await withRetry(() => db.schema.table(tableName, (table) => {
@@ -170,43 +218,7 @@ async function migrateTables(models) {
               }
             });
           }
-
-          // Perbaiki default String yang udah ada
-          if (field.type === 'String' && field.default) {
-            const columnInfo = await db.raw(`
-              SHOW COLUMNS FROM ${tableName} WHERE Field = ?
-            `, [fieldName]);
-            if (columnInfo[0] && columnInfo[0].Default !== field.default) {
-              console.log(`🔧 Updating default to "${field.default}" for ${fieldName} in ${tableName}`);
-              await withRetry(() => db.schema.table(tableName, (table) => {
-                table.string(fieldName, 255).notNullable().defaultTo(field.default).alter();
-              }));
-            }
-          }
-
-          // Perbaiki DateTime yang udah ada
-          if (field.type === 'DateTime' && (field.default === 'now' || field.isUpdatedAt)) {
-            const columnInfo = await db.raw(`
-              SHOW COLUMNS FROM ${tableName} WHERE Field = ?
-            `, [fieldName]);
-            if (columnInfo[0]) {
-              const currentDefault = columnInfo[0].Default;
-              const isUpdatedAtCorrect = columnInfo[0].Extra.toUpperCase().includes('ON UPDATE CURRENT_TIMESTAMP');
-              if (field.default === 'now' && currentDefault !== 'CURRENT_TIMESTAMP') {
-                console.log(`🔧 Setting DEFAULT CURRENT_TIMESTAMP for ${fieldName} in ${tableName}`);
-                await withRetry(() => db.schema.table(tableName, (table) => {
-                  table.dateTime(fieldName).notNullable().defaultTo(db.fn.now()).alter();
-                }));
-              } else if (field.isUpdatedAt && !isUpdatedAtCorrect) {
-                console.log(`🔧 Setting ON UPDATE CURRENT_TIMESTAMP for ${fieldName} in ${tableName}`);
-                await withRetry(() => db.schema.table(tableName, (table) => {
-                  table.dateTime(fieldName).notNullable().defaultTo(db.raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP')).alter();
-                }));
-              }
-            }
-          }
         }
-
         console.log(`✅ Table "${tableName}" checked and updated`);
       }
     }

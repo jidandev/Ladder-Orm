@@ -48,15 +48,22 @@ function parseField(definition) {
   const parts = definition.split(' ').filter(Boolean);
   const field = { type: parts[0] };
 
+  // Gabungin parts buat nangani spasi di @default
+  const fullDefinition = definition.trim();
+  const defaultMatch = fullDefinition.match(/@default\((.*?)\)/);
+  if (defaultMatch) {
+    let defaultValue = defaultMatch[1];
+    if (defaultValue.startsWith('"') && defaultValue.endsWith('"')) {
+      defaultValue = defaultValue.slice(1, -1); // Hilangin kutipan luar
+    }
+    field.default = defaultValue;
+  }
+
   for (const part of parts.slice(1)) {
     if (part === '@id') field.isId = true;
     if (part === '@unique') field.isUnique = true;
     if (part === '?') field.isOptional = true;
     if (part === '@updatedAt') field.isUpdatedAt = true;
-    if (part.startsWith('@default')) {
-      const defaultMatch = part.match(/@default\((.*?)\)/);
-      if (defaultMatch) field.default = defaultMatch[1];
-    }
     if (part.startsWith('@references')) {
       const refMatch = part.match(/@references\((.*?)\)/);
       if (refMatch) field.references = refMatch[1];
