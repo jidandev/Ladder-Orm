@@ -1,4 +1,5 @@
 const fs = require('fs-extra');
+require('dotenv').config();
 
 function parseSchema(filePath) {
   console.log('🔍 Parsing schema.orm...');
@@ -36,7 +37,22 @@ function parseSchema(filePath) {
 function parseDataSource(lines) {
   const datasource = {};
   for (const line of lines) {
-    const [key, value] = line.split('=').map(s => s.trim().replace(/"/g, ''));
+    const [key, rawValue] = line.split('=').map(s => s.trim());
+    let value = rawValue;
+
+    // Handle env("VARIABLE_NAME")
+    const envMatch = rawValue.match(/env\("(.*?)"\)/);
+    if (envMatch) {
+      const envVar = envMatch[1];
+      value = process.env[envVar];
+      if (value === undefined) {
+        throw new Error(`Environment variable "${envVar}" not found in .env`);
+      }
+    } else {
+      // Hilangin kutipan kalo ada
+      value = value.replace(/"/g, '');
+    }
+
     if (key === 'provider') datasource.provider = value;
     if (key === 'url') datasource.url = value;
     if (key === 'ssl') datasource.ssl = value;
@@ -48,13 +64,12 @@ function parseField(definition) {
   const parts = definition.split(' ').filter(Boolean);
   const field = { type: parts[0] };
 
-  // Gabungin parts buat nangani spasi di @default
   const fullDefinition = definition.trim();
   const defaultMatch = fullDefinition.match(/@default\((.*?)\)/);
   if (defaultMatch) {
     let defaultValue = defaultMatch[1];
     if (defaultValue.startsWith('"') && defaultValue.endsWith('"')) {
-      defaultValue = defaultValue.slice(1, -1); // Hilangin kutipan luar
+      defaultValue = defaultValue.slice(1, -1);
     }
     field.default = defaultValue;
   }

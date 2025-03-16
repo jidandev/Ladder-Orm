@@ -1,10 +1,28 @@
 const knex = require('knex');
 const fs = require('fs');
+require('dotenv').config();
 
 let db;
 
 function initDatabase(datasource) {
   if (!db) {
+    
+    let sslConfig = false;
+    if (datasource.ssl) {
+      try {
+        const caPemBase64 = process.env.CA_PEM;
+        if (!caPemBase64) {
+          throw new Error('CA_PEM environment variable not set');
+        }
+        const caPem = Buffer.from(caPemBase64, 'base64').toString('utf8');
+        sslConfig = { ca: caPem, rejectUnauthorized: false };
+        console.log('🔒 Loaded SSL certificate from CA_PEM variable');
+      } catch (err) {
+        console.error(`❌ Failed to load SSL certificate: ${err.message}`);
+        throw err;
+      }
+    }
+    
     console.log('🔌 Connecting to database...');
     db = knex({
       client: 'mysql2',
@@ -14,9 +32,7 @@ function initDatabase(datasource) {
         password: new URL(datasource.url).password,
         database: new URL(datasource.url).pathname.slice(1),
         port: Number(new URL(datasource.url).port) || 3306,
-        ssl: datasource.ssl
-          ? { ca: fs.readFileSync(datasource.ssl).toString(), rejectUnauthorized: false }
-          : false,
+        ssl: sslConfig,
       },
       pool: {
         min: 1,
