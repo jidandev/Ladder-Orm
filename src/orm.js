@@ -117,7 +117,7 @@ applyWhere(query, where) {
           query = query.whereNot(notKey, notValue);
         }
       });
-    } else if (typeof value === "object") {
+    } else if (!Array.isArray(value) && typeof value === "object") {
       Object.entries(value).forEach(([op, val]) => {
         query = query.where(key, operatorMap[op] || "=", val);
       });
