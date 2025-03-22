@@ -79,6 +79,7 @@ function parseField(definition) {
     if (part === '@unique') field.isUnique = true;
     if (part === '?') field.isOptional = true;
     if (part === '@updatedAt') field.isUpdatedAt = true;
+    if(part === "@text") field.isText = true;
     if (part.startsWith('@references')) {
       const refMatch = part.match(/@references\((.*?)\)/);
       if (refMatch) field.references = refMatch[1];

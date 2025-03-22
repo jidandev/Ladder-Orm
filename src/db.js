@@ -87,10 +87,10 @@ async function migrateTables(models) {
             if (field.isId) {
               table.increments(fieldName).primary();
             } else if (field.type === 'String') {
-              const col = table.string(fieldName, 255);
+              const col = field.isText ? table.text(fieldName) : table.string(fieldName, 255);
               if (field.isUnique) col.unique();
               if (!field.isOptional) col.notNullable();
-              if (field.default !== undefined) {
+              if (field.default !== undefined && !field.isText) {
                 console.log(`🔧 Setting default "${field.default}" for ${fieldName} in ${tableName}`);
                 col.defaultTo(field.default);
               }
@@ -131,10 +131,11 @@ async function migrateTables(models) {
             console.log(`➕ Adding column ${fieldName} to ${tableName}`);
             await withRetry(() => db.schema.table(tableName, (table) => {
               if (field.type === 'String') {
-                const col = table.string(fieldName, 255);
+                
+                const col = field.isText ? table.text(fieldName) : table.string(fieldName, 255);
                 if (field.isUnique) col.unique();
                 if (!field.isOptional) col.notNullable();
-                if (field.default !== undefined) {
+                if (field.default !== undefined && !field.isText) {
                   console.log(`🔧 Setting default "${field.default}" for ${fieldName} in ${tableName}`);
                   col.defaultTo(field.default);
                 }
@@ -175,6 +176,18 @@ async function migrateTables(models) {
                   col.alter();
                 }));
               }
+            }
+          }
+          
+          if (field.type === 'String' && field.isText) {
+            const columnInfo = await db.raw(`SHOW COLUMNS FROM ${tableName} WHERE Field = ?`, [fieldName]);
+            if (columnInfo[0]) {
+              console.log(`🔧 Updating column ${fieldName} to TEXT in ${tableName}`);
+              await withRetry(() => db.schema.table(tableName, (table) => {
+                const col = table.text(fieldName).notNullable();
+                if (field.isUnique) col.unique();
+                col.alter();
+              }));
             }
           }
 
